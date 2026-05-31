@@ -1,0 +1,125 @@
+name: Release builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag/branch/SHA to build and release (e.g. v1.0.0)'
+        required: true
+        default: v1.0.0
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-latest
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+          - name: macos-arm64
+            runner: macos-latest
+          - name: windows-x86_64
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build yasm perl
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja yasm
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install build dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install --no-progress -y ninja
+          yasm --version || choco install --no-progress -y yasm
+
+      - name: Configure and build (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cmake -B avm_build -S . -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_DOCS=0 \
+            -DENABLE_TESTS=0
+          cmake --build avm_build -j
+
+      - name: Configure and build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -B avm_build -S . -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_DOCS=0 \
+            -DENABLE_TESTS=0
+          cmake --build avm_build -j
+
+      - name: Package artifacts (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp avm_build/avmenc avm_build/avmdec dist/
+          cp README.md LICENSE PATENTS AUTHORS dist/
+          tar -czf "avm-${{ matrix.name }}.tar.gz" -C dist .
+
+      - name: Package artifacts (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir -p dist
+          cp avm_build/avmenc.exe avm_build/avmdec.exe dist/
+          cp README.md LICENSE PATENTS AUTHORS dist/
+          7z a "avm-${{ matrix.name }}.zip" ./dist/*
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: avm-${{ matrix.name }}
+          retention-days: 7
+          path: |
+            avm-${{ matrix.name }}.tar.gz
+            avm-${{ matrix.name }}.zip
+          if-no-files-found: ignore
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.ref }}
+          name: ${{ inputs.ref }}
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: false

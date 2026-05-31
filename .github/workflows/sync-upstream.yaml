@@ -1,0 +1,34 @@
+name: Sync upstream tags
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_PAT }}
+
+      - name: Mirror new upstream v* tags and trigger builds
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          git remote add upstream https://github.com/AOMediaCodec/avm.git
+          git fetch upstream 'refs/tags/v*:refs/tags/v*' --no-tags
+          for t in $(git tag -l 'v*'); do
+            # Skip tags we've already published a release for.
+            if gh release view "$t" >/dev/null 2>&1; then
+              continue
+            fi
+            echo "New upstream tag $t -> mirroring and dispatching build"
+            # Put the tag (and its upstream commit) on the fork so the
+            # release can attach to it. This push does not trigger a build.
+            git push origin "refs/tags/$t"
+            # Build runs from main's release.yaml, checking out this ref.
+            gh workflow run release.yaml -f ref="$t"
+          done
